@@ -146,3 +146,7 @@ local/
 # Job scripts
 jobs/
 scripts/
+
+tiny-imagenet-200/
+m3ae_small.pkl
+representations.pt

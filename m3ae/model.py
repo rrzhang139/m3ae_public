@@ -246,22 +246,32 @@ class Attention(nn.Module):
         )
         batch, n, channels = inputs.shape
         scale = (self.dim // self.num_heads) ** -0.5
+        # inits kqv matrices, rows is channels, cols is channels*3 for three matrices
         qkv = nn.Dense(
             self.dim * 3,
             use_bias=self.use_bias,
             kernel_init=self.kernel_init,
         )(inputs)
+        # Reshapes the QKV tensor to separate the heads and split the last dimension into self.num_heads.
         qkv = jnp.reshape(
             qkv, (batch, n, 3, self.num_heads, channels // self.num_heads)
         )
         qkv = jnp.transpose(qkv, (2, 0, 3, 1, 4))
         q, k, v = qkv[0], qkv[1], qkv[2]
 
+        # [batch_size, num_heads, sequence_length, sequence_length].
+        # each batch has a number of heads!
+        # The attention mechanism works by comparing each token in the sequence with every 
+        # other token. This results in a 2D matrix of attention scores of shap
         attention = (q @ jnp.swapaxes(k, -2, -1)) * scale
-
+        # Masking: so it masks certain token to token pair attention score in a head in a batch? 
         if padding_mask is not None:
+            # padding_mask is (batch, seq), tensor of integers
+            # adds 2 new dimensions [batch_size, 1, 1, sequence_length].
             padding_mask = jnp.expand_dims(jnp.expand_dims(padding_mask, 1), 1)
+            # reshapes padding_mask to attention shape: [batch_size, num_heads, sequence_length, sequence_length].
             padding_mask = jnp.broadcast_to(padding_mask, attention.shape)
+            # if padding_mask is >0, then set attention to -1e7 (negative infinity)
             attention = jnp.where(padding_mask > 0, jnp.array(-1e7), attention)
 
         attention = nn.softmax(attention, axis=-1)
@@ -482,13 +492,17 @@ class MaskedMultimodalAutoencoder(nn.Module):
             }[name]
         else:
             return 0.0
-
+    # Used without masking, so a baseline
     def forward_representation(self, image, text, text_padding_mask, deterministic=False):
         batch_size = image.shape[0]
+        # expands cls token to batch size
         cls_token = jnp.broadcast_to(self.cls_token, (batch_size, 1, self.config.emb_dim))
+        # adds cls token to input
         input_tensors = [cls_token]
+        # no masking in cls
         padding_masks = [jnp.zeros((batch_size,  1), dtype=jnp.float32)]
         if image is not None:
+            # adds image embedding to input
             image_x = (
                 self.image_embedding(image)
                 + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1])
@@ -509,6 +523,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
         x = jnp.concatenate(input_tensors, axis=1)
         padding_mask = jnp.concatenate(padding_masks, axis=1)
         x = self.encoder(x, deterministic, padding_mask)
+        #  For example, you might use forward_representation to quickly get the encoder's output for some downstream task, without needing to mask or unmask any data.
         return x
 
     def forward_encoder(self, image, text, text_padding_mask, deterministic=False):
@@ -520,6 +535,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
         input_tensors = [cls_token]
         padding_masks = [jnp.zeros((batch_size, 1), dtype=jnp.float32)]
         if image is not None:
+            # Keep a certain amount of image not masked
             image_keep_length = int(
                 image.shape[1] * (1.0 - self.config.image_mask_ratio)
             )
@@ -528,6 +544,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
                 + get_2d_sincos_pos_embed(self.config.emb_dim, image.shape[1])
                 + self.get_type_embedding('encoder_image_type_embedding')
             )
+            # Masking
             image_x, image_mask, image_ids_restore = random_masking(
                 image_x, self.make_rng("noise"), image_keep_length
             )
@@ -569,6 +586,7 @@ class MaskedMultimodalAutoencoder(nn.Module):
             image_x = x[:, 1:, :]
             text_x = None
         else:
+            # image_keep_length is where umasked image_embeddings end
             image_x = x[:, 1:image_keep_length + 1, :]
             text_x = x[:, image_keep_length + 1:, :]
 
